@@ -1,39 +1,40 @@
-# Core ML dependencies
-torch>=2.0.0
-torchaudio>=2.0.0
-numpy>=1.21.0
-scipy>=1.7.0
+################################################################################
+# FarGan-RVQ training requirements (aligned with OSCE discriminators)
+# - Pinned versions to match dnn/torch/osce/requirements.txt
+# - Install PyTorch/CUDA via conda first (see README/env instructions)
+################################################################################
+
+# Core ML stack (pin to OSCE-compatible versions)
+torch==2.0.1
+torchaudio==2.0.2
+numpy==1.25.2
+scipy==1.11.2
 
 # Audio processing
 soundfile>=0.12.1
-librosa>=0.10.0
+librosa==0.10.0
 
 # Data handling & visualization
-matplotlib>=3.5.0
+matplotlib==3.7.3
 scikit-learn>=1.1.0
 pandas>=1.5.0
-pyyaml>=6.0
+pyyaml==6.0.1
 
 # Training utilities
-tqdm>=4.64.0
+tqdm==4.66.1
 tensorboard>=2.10.0
-wandb>=0.13.0  # optional: for experiment tracking
+wandb>=0.13.0  # optional
 
-# Enhanced architectures (if using external implementations)
-# mamba-ssm>=1.0.0  # uncomment if using official Mamba
+# OSCE extras (for multi-resolution frequency discriminators)
+pesq==0.0.4
+gitpython==3.1.41
 
-# Development & evaluation
-pytest>=7.0.0  # for testing
-black>=22.0.0   # code formatting
-isort>=5.10.0   # import sorting
+# Dev tools (optional)
+pytest>=7.0.0
+black>=22.0.0
+isort>=5.10.0
 
-# Optional GPU acceleration
-# triton>=2.0.0   # for custom CUDA kernels
-# flash-attn>=2.0.0  # for efficient attention (if needed)
-
-# For mixed precision & optimization
-# apex  # NVIDIA Apex (alternative to native AMP)
-
-# Audio quality metrics
-# pesq>=0.0.4      # PESQ evaluation
-# pystoi>=0.3.3    # STOI evaluation 
+# Optional/advanced (commented: install only if you know you need them)
+# triton>=2.0.0        # custom CUDA kernels
+# flash-attn>=2.0.0    # fast attention
+# apex                 # NVIDIA Apex (instead of native AMP)
