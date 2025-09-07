@@ -1,40 +1,39 @@
 ################################################################################
-# FarGan-RVQ training requirements (aligned with OSCE discriminators)
-# - Pinned versions to match dnn/torch/osce/requirements.txt
-# - Install PyTorch/CUDA via conda first (see README/env instructions)
+# FarGan-RVQ requirements (pinned to your current "fargan-rvq" environment)
+# Tip: install PyTorch/CUDA via conda first, then pip install this file.
 ################################################################################
 
-# Core ML stack (pin to OSCE-compatible versions)
-torch==2.0.1
-torchaudio==2.0.2
-numpy==1.25.2
-scipy==1.11.2
+# Core ML stack (from your env)
+torch==2.5.1
+torchaudio==2.5.1
+numpy==2.0.2
+scipy==1.13.1
 
 # Audio processing
-soundfile>=0.12.1
-librosa==0.10.0
-
-# Data handling & visualization
-matplotlib==3.7.3
-scikit-learn>=1.1.0
-pandas>=1.5.0
-pyyaml==6.0.1
+soundfile==0.13.1
+librosa==0.11.0
 
 # Training utilities
-tqdm==4.66.1
-tensorboard>=2.10.0
-wandb>=0.13.0  # optional
+tqdm==4.67.1
+tensorboard==2.20.0
 
-# OSCE extras (for multi-resolution frequency discriminators)
-pesq==0.0.4
-gitpython==3.1.41
+# Data handling
+pandas==2.3.2
+pyyaml==6.0
 
-# Dev tools (optional)
-pytest>=7.0.0
-black>=22.0.0
-isort>=5.10.0
+# Experiment tracking / misc (installed in your env)
+wandb==0.21.3
+gitpython==3.1.45
 
-# Optional/advanced (commented: install only if you know you need them)
-# triton>=2.0.0        # custom CUDA kernels
-# flash-attn>=2.0.0    # fast attention
-# apex                 # NVIDIA Apex (instead of native AMP)
+# Optional extras (uncomment if needed)
+# pesq==0.0.4           # PESQ eval; requires compiler toolchain
+# matplotlib            # Visualization scripts
+# seaborn               # Visualization
+# plotly                # Streamlit dashboard
+# streamlit             # Live dashboard
+# scikit-learn          # If you run analysis scripts requiring it
+
+# Advanced (install only if you know you need them)
+# triton>=2.0.0         # custom CUDA kernels
+# flash-attn>=2.0.0     # fast attention
+# apex                  # NVIDIA Apex (instead of native AMP)
