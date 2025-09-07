@@ -89,3 +89,31 @@ src/x64
 .vs/
 .vscode/
 CMakeSettings.json
+## ==== FarGanRVQ additions (ML artifacts) ====
+## Large data and training outputs (do not push)
+data/
+data_cn/
+analysis_results/
+MambaJSCC_*/
+
+# FarGanRVQ runtime artifacts
+dnn/FarGanRVQ/checkpoints/
+dnn/FarGanRVQ/tensorboard_logs/
+dnn/FarGanRVQ/history/
+dnn/FarGanRVQ/analysis/
+
+# Common large/binary artifacts
+*.pth
+*.pt
+*.ckpt
+*.npz
+*.npy
+*.onnx
+*.f32
+*.pcm
+*.tfevents*
+*.log
+
+# Python cache
+__pycache__/
+*.pyc

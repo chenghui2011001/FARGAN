@@ -1,0 +1,29 @@
+experiment: default
+seed: 1337
+
+paths:
+  data_root: ./data
+  exp_dir: ./experiments/default
+  ckpt_dir: ./checkpoints
+
+model:
+  encoder:
+    rvq_stages: 2
+    codebook_sizes: [128, 64]
+  decoder:
+    subframe_ms: 2.5
+    glus: 3
+  jscc:
+    interleave: 2
+    modulation: bpsk
+
+train:
+  batch_size: 16
+  epochs: 50
+  lr_g: 3.0e-5
+  lr_d: 1.0e-4
+  optimizer_g: muon
+  optimizer_d: adamw
+
+eval:
+  metrics: [pesq, stoi, warpq] 
