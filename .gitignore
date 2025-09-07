@@ -97,7 +97,14 @@ analysis_results/
 MambaJSCC_*/
 
 # FarGanRVQ runtime artifacts
+# 默认忽略，但允许上传 FarGanRVQ 的指定检查点
 dnn/FarGanRVQ/checkpoints/
+!dnn/FarGanRVQ/checkpoints/
+!dnn/FarGanRVQ/checkpoints/**/
+!dnn/FarGanRVQ/checkpoints/**/*.pth
+!dnn/FarGanRVQ/checkpoints/**/*.pt
+!dnn/FarGanRVQ/checkpoints/**/*.ckpt
+!dnn/FarGanRVQ/checkpoints/**/*.tfevents*
 dnn/FarGanRVQ/tensorboard_logs/
 dnn/FarGanRVQ/history/
 dnn/FarGanRVQ/analysis/
