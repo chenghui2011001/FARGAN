@@ -215,9 +215,10 @@ class MambaConditionNet(nn.Module):
         cond = self.temporal_upsample(x)  # [B, out_dim, T*4]
         cond = cond.transpose(1, 2)  # [B, T*4, out_dim]
         
-        # 增益预测
-        gain = torch.exp(self.gain_head(cond))  # [B, T*4, 1]
-        
+        # 增益预测（上界保护，避免数值爆炸导致音频剪裁/NaN）
+        gain_raw = self.gain_head(cond)
+        gain = torch.exp(gain_raw.clamp(-2.0, 2.0))  # [B, T*4, 1]
+
         return cond, gain
 
 

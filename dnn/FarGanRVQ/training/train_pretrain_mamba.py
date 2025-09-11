@@ -423,8 +423,13 @@ def main():
                         writer.add_scalar('Val/lag_samples', float(lag), step)
                         writer.add_scalar('Val/corr', float(corr), step)
                         try:
-                            writer.add_audio('Val/pred_aligned',   yv_a[0].detach().cpu(), step, sample_rate=16000)
-                            writer.add_audio('Val/target_aligned', vt_a[0].detach().cpu(), step, sample_rate=16000)
+                            # 安全写音频：去除 NaN/Inf 并限幅到 [-1, 1]
+                            p_audio = yv_a[0].detach().cpu().float()
+                            t_audio = vt_a[0].detach().cpu().float()
+                            p_audio = torch.nan_to_num(p_audio, nan=0.0, posinf=0.0, neginf=0.0).clamp(-1.0, 1.0)
+                            t_audio = torch.nan_to_num(t_audio, nan=0.0, posinf=0.0, neginf=0.0).clamp(-1.0, 1.0)
+                            writer.add_audio('Val/pred_aligned',   p_audio, step, sample_rate=16000)
+                            writer.add_audio('Val/target_aligned', t_audio, step, sample_rate=16000)
                         except Exception:
                             pass
             # 恢复即时权重
