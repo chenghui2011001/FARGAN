@@ -137,6 +137,10 @@ def main():
     ap.add_argument('--drop-last', action='store_true', default=True)
     ap.add_argument('--max-steps-per-epoch', type=int, default=0)
     ap.add_argument('--channels-last', action='store_true')
+    # 训练控制
+    ap.add_argument('--resume', type=str, default=None, help='恢复训练的生成器权重(.pth)。可与 --resume-load-optim 搭配')
+    ap.add_argument('--resume-load-optim', action='store_true', help='从 ckpt 恢复优化器状态')
+    ap.add_argument('--ar-preheat', type=int, default=0, help='自回归训练时用 target 前 N 帧(160/N)预热激励记忆；并行TF无效')
     # 损失/信道
     ap.add_argument('--enable-csi', action='store_true')
     ap.add_argument('--snr-range', type=float, nargs=2, default=[-10, 20])
@@ -210,6 +214,21 @@ def main():
     # ---------- 模型 ----------
     model = MambaEnhancedFarGan(in_features=F_used, cond_dim=32, subframe_size=40).to(device)
 
+    # 可选恢复生成器参数（在 DDP 之前）
+    opt_state_cache = None
+    if args.resume is not None and os.path.isfile(args.resume):
+        try:
+            ckpt = torch.load(args.resume, map_location='cpu', weights_only=True)
+        except TypeError:
+            ckpt = torch.load(args.resume, map_location='cpu')
+        msd = ckpt.get('model_state_dict', ckpt if isinstance(ckpt, dict) else None)
+        if isinstance(msd, dict):
+            missing, unexpected = model.load_state_dict(msd, strict=False)
+            if is_main_process(rank):
+                print(f"🔁 Resume: loaded generator from {args.resume} | missing={len(missing)} unexpected={len(unexpected)}")
+        if args.resume_load_optim and isinstance(ckpt, dict) and 'optimizer_state_dict' in ckpt:
+            opt_state_cache = ckpt['optimizer_state_dict']
+
     # 预冻结未用分支（必须在 DDP 之前）
     if args.freeze_unused:
         freeze_kw = []
@@ -257,6 +276,14 @@ def main():
     base_model = (model.module if is_dist else model)
     trainable_params = [p for p in base_model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, betas=(0.8, 0.99), weight_decay=1e-4)
+    if opt_state_cache is not None:
+        try:
+            optimizer.load_state_dict(opt_state_cache)
+            if is_main_process(rank):
+                print('🔁 Resume: optimizer state restored')
+        except Exception as e:
+            if is_main_process(rank):
+                print(f'⚠️ Resume: optimizer state load failed: {e}')
 
     # ---- scheduler（warmup + cosine）----
     steps_per_epoch = len(dl) if args.max_steps_per_epoch == 0 else min(len(dl), args.max_steps_per_epoch)
@@ -305,12 +332,21 @@ def main():
 
             N_samples = min(target.shape[1], features.shape[1] * 160)
             with autocast_ctx():
+                # Teacher Forcing 并行 or 自回归（可选预热）
+                if args.parallel_train:
+                    teacher_sig = target
+                else:
+                    if args.ar_preheat and args.ar_preheat > 0:
+                        n_pre = min(N_samples, int(args.ar_preheat) * 160)
+                        teacher_sig = target[:, :n_pre]
+                    else:
+                        teacher_sig = None
                 y_hat = model(
                     features,
                     csi=None, channel_noise=None,
                     target_length=N_samples,
                     parallel_train=args.parallel_train,
-                    teacher_signal=target if args.parallel_train else None,
+                    teacher_signal=teacher_sig,
                 )
                 # 对齐
                 min_len = min(y_hat.shape[1], target.shape[1])
@@ -384,8 +420,13 @@ def main():
                     vfeat = vfeat[:2].to(device); vtarget = vtarget[:2].to(device)
                     fixed_tlen = args.seq_len * 160
                     with autocast_ctx():
+                        # 验证默认走自回归；若指定预热则应用
+                        vteacher = None
+                        if args.ar_preheat and args.ar_preheat > 0:
+                            vteacher = vtarget[:, :min(fixed_tlen, int(args.ar_preheat)*160)]
                         yv = model_eval(vfeat, csi=None, channel_noise=None,
-                                        target_length=fixed_tlen, parallel_train=False)
+                                        target_length=fixed_tlen, parallel_train=False,
+                                        teacher_signal=vteacher)
                     yv = yv[:, :min(vtarget.shape[1], yv.shape[1])]
                     vt = vtarget[:, :yv.shape[1]]
 
