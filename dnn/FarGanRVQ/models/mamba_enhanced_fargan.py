@@ -461,7 +461,8 @@ class MambaEnhancedFarGan(nn.Module):
         
         # 子帧合成：支持训练期并行Teacher Forcing
         T_sub = cond_subframe.shape[1]
-        if self.training and parallel_train and (teacher_signal is not None):
+        # 允许在 eval() 下也使用并行 Teacher Forcing（只依赖参数而非 self.training）
+        if parallel_train and (teacher_signal is not None):
             # 构造教师驱动的 prev/pitch 序列
             total_needed = T_sub * self.subframe_size
             teacher_trim = teacher_signal[:, :total_needed]
