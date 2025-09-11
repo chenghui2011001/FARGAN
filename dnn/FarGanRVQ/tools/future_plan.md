@@ -89,6 +89,20 @@
 
 ---
 
+## 3.1 进展更新（实现项）
+
+- 预训练日志安全：写入音频前执行 `nan_to_num + clamp([-1,1])`（避免 TensorBoard 报错与剪裁）。
+- 增益上界：`gain = exp(clamp(gain_raw, -2, 2))`，抑制振幅爆发与 NaN/Inf。
+- 激励记忆闭环（MambaEnhancedFarGan）：
+  - 新增 `exc_mem(256)`、按周期索引抽取 `pitch_pred`、`prev_subframe = exc_mem[-40:]`；
+  - 每子帧写回 `exc_mem = concat(exc_mem[40:], subframe_out)`；
+  - 对 `prev/pitch` 以 `1/(eps+gain)` 归一后再送入子帧网；
+  - 若提供 `teacher_signal`，在自回归路径开头用首帧(160)做记忆预热（可选）。
+
+注：并行 Teacher Forcing 路径保持不变（用于诊断/加速），自回归路径默认走“激励记忆 + 周期索引 + 写回”。
+
+---
+
 ## 4. 与原版 FARGAN 的关键差异（必须对齐的点）
 
 1. **激励记忆 `exc_mem(256)` + 周期索引取样 + 写回滑窗**（最关键）

@@ -480,27 +480,56 @@ class MambaEnhancedFarGan(nn.Module):
                 csi=csi,
             )
         else:
-            # 逐子帧自回归（原逻辑）
+            # 逐子帧自回归（增强版：激励记忆 + 周期索引 + 写回）
             outputs = []
-            prev_subframe = torch.zeros(B, self.subframe_size, device=device)
+            # 激励记忆（长度256），用于按周期抽取pitch excitation，并写回滑窗
+            exc_mem = torch.zeros(B, 256, device=device)
 
+            # 可选：从教师信号进行预热（若提供 teacher_signal 则将首帧写入 exc_mem 尾部）
+            if teacher_signal is not None and teacher_signal.shape[1] >= self.subframe_size * 4:
+                # 取一帧(160)进行记忆预热；更长也只需最后一帧即可提供相位锚点
+                exc_mem[:, -160:] = teacher_signal[:, :160]
+
+            # 子帧递推
+            subframe_size = self.subframe_size
             for t in range(T_sub):
-                curr_cond = cond_subframe[:, t]  # [B, 96]
-                curr_gain = gain[:, t]          # [B, 1]
+                curr_cond = cond_subframe[:, t]     # [B, 96]
+                curr_gain = gain[:, t]              # [B, 1]
 
-                # 基音预测
-                pitch_pred = self._simple_pitch_prediction(prev_subframe, periods[:, t // 4])
+                # 从激励记忆取 prev（上一子帧）
+                prev_subframe = exc_mem[:, -subframe_size:]  # [B, 40]
+
+                # 基于周期的激励抽取（与原FARGAN一致的索引策略）
+                # period 映射到当前子帧所属帧
+                if periods is None:
+                    # 缺省周期：用中值100
+                    period_t = torch.full((B,), 100.0, device=device)
+                else:
+                    period_t = periods[:, min(t // 4, periods.shape[1]-1)]  # [B]
+
+                # idx = 256 - period + (arange(44) - 2); 超界回绕 period
+                rng = torch.arange(subframe_size + 4, device=device)
+                idx = (256 - period_t.long().clamp(32, 255)).unsqueeze(1) + rng.unsqueeze(0) - 2
+                mask = idx >= 256
+                idx = idx - mask * period_t.long().unsqueeze(1)
+                pitch_window = torch.gather(exc_mem, 1, idx)  # [B, 44]
+                pitch_pred = pitch_window[:, 2:-2]            # [B, 40]
+
+                # 归一到增益尺度，避免在子网内部过饱和（与原版思路一致）
+                inv_gain = (1.0 / (1e-5 + curr_gain.squeeze(-1))).unsqueeze(1)  # [B,1]
+                prev_scaled = prev_subframe * inv_gain
+                pitch_scaled = pitch_pred * inv_gain
 
                 # 子帧合成
                 subframe_out = self.subframe_net(
-                    curr_cond, prev_subframe, pitch_pred, csi=csi
+                    curr_cond, prev_scaled, pitch_scaled, csi=csi
                 )
 
                 # 增益应用
                 subframe_out = subframe_out * curr_gain
 
-                # 更新前一子帧
-                prev_subframe = subframe_out.detach()
+                # 写回激励记忆（滑窗）
+                exc_mem = torch.cat([exc_mem[:, subframe_size:], subframe_out.detach()], dim=1)
 
                 outputs.append(subframe_out)
 
