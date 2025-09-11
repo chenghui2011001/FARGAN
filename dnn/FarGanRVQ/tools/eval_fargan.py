@@ -101,6 +101,8 @@ def main():
     ap.add_argument("--deemph", type=float, default=0.0, help=">0 启用去预加重，如 0.97")
     ap.add_argument("--teacher-forcing", action="store_true",
                 help="评测时以 target 作为 teacher_signal 旁路（仅诊断）")
+    ap.add_argument("--ar-preheat", type=int, default=0,
+                help="自回归评测时的预热帧数（每帧160样本）。>0 时将使用 target 的前 N 帧做激励记忆预热，仅在未启用 --teacher-forcing 时生效")
     ap.add_argument("--rms-match", action="store_true",
                 help="写入前把预测 RMS 对齐到 target（只用于听感验证）")
     ap.add_argument("--print-metrics", action="store_true",
@@ -155,13 +157,28 @@ def main():
         feats   = feats.to(device, non_blocking=True)
         target  = target.to(device, non_blocking=True)       # [B, T]
         # 生成预测；对齐目标长度
-        y_hat = model(
-            feats,
-            csi=None, channel_noise=None,
-            target_length=min(target.shape[1], feats.shape[1]*160),
-            parallel_train=bool(args.teacher_forcing),
-            teacher_signal=(target if args.teacher_forcing else None),
-        )
+        # Teacher Forcing：并行子帧路径
+        if args.teacher_forcing:
+            y_hat = model(
+                feats,
+                csi=None, channel_noise=None,
+                target_length=min(target.shape[1], feats.shape[1]*160),
+                parallel_train=True,
+                teacher_signal=target,
+            )
+        else:
+            # AR 路径：可选预热（以 target 的前 N 帧初始化激励记忆）
+            preheat = None
+            if args.ar_preheat and args.ar_preheat > 0:
+                N = int(args.ar_preheat) * 160
+                preheat = target[:, :min(N, target.shape[1])]
+            y_hat = model(
+                feats,
+                csi=None, channel_noise=None,
+                target_length=min(target.shape[1], feats.shape[1]*160),
+                parallel_train=False,
+                teacher_signal=preheat,
+            )
 
         y_hat = y_hat[:, :target.shape[1]]                    # [B, T]
 
