@@ -1,0 +1,27 @@
+# --- FarGAN-RVQ local artifacts ---
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.npz
+*.npy
+*.f32
+*.s16
+*.pcm
+*.wav
+*.flac
+*.mp3
+
+# training outputs
+runs/
+runs_eval/
+logs/
+wandb/
+dnn/FarGanRVQ/checkpoints/
+dnn/FarGanRVQ/tensorboard_logs/
+
+# caches
+__pycache__/
+*.pyc
+*.pyo
+.cache/
