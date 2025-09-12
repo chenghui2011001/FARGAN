@@ -399,9 +399,12 @@ class MambaEnhancedFarGan(nn.Module):
     """
     基于现有EnhancedFarGan框架融合MambaJSCC技术
     """
-    def __init__(self, in_features=20, cond_dim=32, subframe_size=40):
+    def __init__(self, in_features=20, cond_dim=32, subframe_size=40,
+                 cond_shift: int = 2, period_shift: int = 3):
         super().__init__()
         self.subframe_size = subframe_size
+        self.cond_shift = int(cond_shift)
+        self.period_shift = int(period_shift)
         
         # 输入处理（保持与原框架一致）
         self.feature_proj = nn.Linear(in_features, cond_dim)
@@ -455,11 +458,12 @@ class MambaEnhancedFarGan(nn.Module):
         if voicing is None:
             voicing = torch.ones(B, T10, device=device)
         
-        # 特征处理（与原版 FARGAN 时间对齐）：
-        # 原版在 cond_net 中丢弃前2帧（features[:,2:], periods[:,2:])，
-        # 且在逐帧合成时使用 period[:, 3+n]。这里复现同样的时序偏移。
-        feats_shift = features[:, 2:, :] if features.shape[1] > 2 else features
-        periods_shift = periods[:, 2:] if periods is not None and periods.shape[1] > 2 else periods
+        # 特征处理（可配置的时间对齐）：
+        # cond_shift: cond_net 输入从第 cond_shift 帧开始
+        # period_shift: AR 时每帧的周期索引使用 period[:, period_shift + frame_idx]
+        cs = max(0, self.cond_shift)
+        feats_shift = features[:, cs:, :] if features.shape[1] > cs else features
+        periods_shift = periods[:, cs:] if periods is not None and periods.shape[1] > cs else periods
 
         feat_proj = self.feature_proj(feats_shift)
         # 周期与清浊音与 cond 同步对齐
@@ -563,14 +567,14 @@ class MambaEnhancedFarGan(nn.Module):
 
                 # 基于周期的激励抽取（与原FARGAN一致的索引策略）
                 # period 映射到当前子帧所属帧
-                if periods is None:
-                    # 缺省周期：用中值100
-                    period_t = torch.full((B,), 100.0, device=device)
-                else:
-                    # 对齐原版：period 索引使用 3 + frame_idx
-                    frame_idx = t // 4
-                    per_idx = min(3 + frame_idx, periods.shape[1] - 1)
-                    period_t = periods[:, per_idx]  # [B]
+        if periods is None:
+            # 缺省周期：用中值100
+            period_t = torch.full((B,), 100.0, device=device)
+        else:
+            # 可配置周期偏移：period 索引使用 period_shift + frame_idx
+            frame_idx = t // 4
+            per_idx = min(self.period_shift + frame_idx, periods.shape[1] - 1)
+            period_t = periods[:, per_idx]  # [B]
 
                 # idx = 256 - period + (arange(44) - 2); 超界回绕 period
                 rng = torch.arange(subframe_size + 4, device=device)

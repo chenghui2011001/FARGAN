@@ -162,6 +162,12 @@ def main():
     ap.add_argument('--dc-loss-w',  type=float, default=0.01, help='短窗 DC 均值 L2 权重')
     ap.add_argument('--sig-win',    type=int,   default=80,   help='短窗大小（样本）')
     ap.add_argument('--sig-hop',    type=int,   default=80,   help='短窗步长（样本）')
+    # 时序/模型参数
+    ap.add_argument('--period-shift', type=int, default=3,
+                    help='自回归时每帧周期索引的基础偏移（默认3，对齐原版FARGAN）')
+    # 训练期短时对齐
+    ap.add_argument('--train-align-lag', type=int, default=80,
+                    help='训练时在 ±lag 范围内对齐 y_hat/target 后再计算损失；0 关闭')
     # DDP 相关
     ap.add_argument('--ddp-find-unused', action='store_true', help='调试时可开；性能较差')
     ap.add_argument('--no-freeze-unused', dest='freeze_unused', action='store_false', help='关闭预冻结（默认开启）')
@@ -227,7 +233,8 @@ def main():
     )
 
     # ---------- 模型 ----------
-    model = MambaEnhancedFarGan(in_features=F_used, cond_dim=32, subframe_size=40).to(device)
+    model = MambaEnhancedFarGan(in_features=F_used, cond_dim=32, subframe_size=40,
+                                cond_shift=2, period_shift=args.period_shift).to(device)
 
     # 可选恢复生成器参数（在 DDP 之前）
     opt_state_cache = None
@@ -374,6 +381,28 @@ def main():
                 min_len = min(y_hat.shape[1], target.shape[1])
                 y_hat = y_hat[:, :min_len]
                 target_ = target[:, :min_len]
+
+                # 训练期短时对齐（可选）：按第1条样本估计整批 lag，并对齐后再算损失
+                if args.train_align_lag and args.train_align_lag > 0:
+                    with torch.no_grad():
+                        def _best_lag_1d(x, y, max_lag=80):
+                            best_lag, best_c = 0, -1e9
+                            for L in range(-max_lag, max_lag+1):
+                                if L >= 0:
+                                    c = F.cosine_similarity(x[L:], y[:y.numel()-L], dim=0)
+                                else:
+                                    L2 = -L; c = F.cosine_similarity(x[:x.numel()-L2], y[L2:], dim=0)
+                                v = float(c)
+                                if v > best_c: best_c, best_lag = v, L
+                            return best_lag
+                        lag = _best_lag_1d(y_hat[0].contiguous().view(-1), target_[0].contiguous().view(-1), max_lag=int(args.train_align_lag))
+                    if lag > 0:
+                        y_hat = y_hat[:, lag:]
+                        target_ = target_[:, :y_hat.shape[1]]
+                    elif lag < 0:
+                        L2 = -lag
+                        target_ = target_[:, L2:]
+                        y_hat = y_hat[:, :target_ .shape[1]]
 
                 # 去直流 + （可选）RMS 归一 + anti-clip（仅用于 loss）
                 y_hat_p, target_p = preprocess_for_loss(y_hat, target_, ref_rms=args.loss_ref_rms)
