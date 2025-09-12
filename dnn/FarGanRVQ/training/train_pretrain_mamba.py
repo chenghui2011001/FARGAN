@@ -27,18 +27,22 @@ from dnn.FarGanRVQ.models.mamba_enhanced_fargan import (
     MambaEnhancedFarGan, MambaJSCCEnhancedLoss
 )
 
-# ---------- 预处理：去直流 + RMS归一 + anti-clip ----------
+# ---------- 预处理：去直流 + （可选）RMS归一 + anti-clip ----------
 def preprocess_for_loss(pred: torch.Tensor, target: torch.Tensor, ref_rms: float = 0.1):
+    """
+    ref_rms > 0: 去直流 + 将两端 RMS 标定到 ref_rms（利于数值稳定，但会弱化幅度学习）
+    ref_rms <=0: 仅去直流（推荐在需要学习绝对幅度时使用）
+    """
     # 去直流
     pred = pred - pred.mean(dim=1, keepdim=True)
     target = target - target.mean(dim=1, keepdim=True)
-    # RMS 归一
-    eps = 1e-8
-    p_rms = torch.sqrt((pred ** 2).mean(dim=1, keepdim=True) + eps)
-    t_rms = torch.sqrt((target ** 2).mean(dim=1, keepdim=True) + eps)
-    pred = pred * (ref_rms / p_rms)
-    target = target * (ref_rms / t_rms)
-    # anti-clip（软限制）
+    if ref_rms and ref_rms > 0:
+        eps = 1e-8
+        p_rms = torch.sqrt((pred ** 2).mean(dim=1, keepdim=True) + eps)
+        t_rms = torch.sqrt((target ** 2).mean(dim=1, keepdim=True) + eps)
+        pred = pred * (ref_rms / p_rms)
+        target = target * (ref_rms / t_rms)
+    # anti-clip（软限制，仅用于 loss 前向防梯度爆炸）
     pred = 0.999 * torch.tanh(pred / 0.999)
     return pred, target
 
@@ -150,6 +154,8 @@ def main():
     ap.add_argument('--channel-prob', type=float, default=0.5)
     ap.add_argument('--stft-sizes', type=int, nargs='+', default=[512, 1024])
     ap.add_argument('--disable-phase-loss', action='store_true')
+    ap.add_argument('--loss-ref-rms', type=float, default=0.1,
+                    help='loss 前的 RMS 标定参考。>0 才启用（默认0.1）；设为 0 关闭 RMS 归一，以学习绝对幅度')
     # 短窗/幅度/直流约束
     ap.add_argument('--sig-loss-w', type=float, default=0.03, help='短窗 sig_loss(80) 权重')
     ap.add_argument('--rms-loss-w', type=float, default=0.05, help='短窗 log-RMS 匹配权重')
@@ -369,8 +375,8 @@ def main():
                 y_hat = y_hat[:, :min_len]
                 target_ = target[:, :min_len]
 
-                # 去直流 + RMS 归一 + anti-clip（仅用于 loss）
-                y_hat_p, target_p = preprocess_for_loss(y_hat, target_, ref_rms=0.1)
+                # 去直流 + （可选）RMS 归一 + anti-clip（仅用于 loss）
+                y_hat_p, target_p = preprocess_for_loss(y_hat, target_, ref_rms=args.loss_ref_rms)
 
                 # 损失
                 losses = loss_fn(pred=y_hat_p, target=target_p, csi=None, disc_real=None, disc_fake=None,
