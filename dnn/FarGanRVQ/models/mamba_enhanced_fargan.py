@@ -599,15 +599,22 @@ class AdaptivePitchPredictor(nn.Module):
 
 # 保持与现有损失函数的兼容性
 class MambaJSCCEnhancedLoss(nn.Module):
-    """增强的损失函数，支持CSI自适应"""
-    def __init__(self, spectral_weight=1.0, adversarial_weight=0.1, 
-                 channel_weight=0.05, phase_weight=0.1, debug: bool = False,
-                 stft_sizes=None):
+    """增强的损失函数，支持CSI自适应 + 短窗时域/幅度/直流约束"""
+    def __init__(self, spectral_weight=1.0, adversarial_weight=0.1,
+                 channel_weight=0.05, phase_weight=0.1,
+                 sig_weight: float = 0.0, rms_weight: float = 0.0, dc_weight: float = 0.0,
+                 sig_win: int = 80, sig_hop: int = 80,
+                 debug: bool = False, stft_sizes=None):
         super().__init__()
         self.spectral_weight = spectral_weight
         self.adversarial_weight = adversarial_weight
         self.channel_weight = channel_weight
         self.phase_weight = phase_weight
+        self.sig_weight = sig_weight
+        self.rms_weight = rms_weight
+        self.dc_weight = dc_weight
+        self.sig_win = sig_win
+        self.sig_hop = sig_hop
         self.debug = debug
         
         # 多分辨率STFT损失
@@ -618,7 +625,8 @@ class MambaJSCCEnhancedLoss(nn.Module):
             for size in stft_sizes
         ])
         
-    def forward(self, pred, target, csi=None, disc_real=None, disc_fake=None):
+    def forward(self, pred, target, csi=None, disc_real=None, disc_fake=None,
+                pred_raw: torch.Tensor = None, target_raw: torch.Tensor = None):
         losses = {}
         
         # 基础光谱损失
@@ -674,10 +682,22 @@ class MambaJSCCEnhancedLoss(nn.Module):
         # 相位感知损失
         phase_loss = self._phase_loss(pred, target)
         losses['phase'] = phase_loss * self.phase_weight
+
+        # 短窗时域相位/瞬态约束 + RMS/直流（在原始波形上计算更有效）
+        if (self.sig_weight > 0 or self.rms_weight > 0 or self.dc_weight > 0):
+            x = pred_raw if pred_raw is not None else pred
+            y = target_raw if target_raw is not None else target
+            s_loss, r_loss, d_loss = self._short_time_losses(x, y, self.sig_win, self.sig_hop)
+            if self.sig_weight > 0:
+                losses['sig'] = s_loss * self.sig_weight
+            if self.rms_weight > 0:
+                losses['rms'] = r_loss * self.rms_weight
+            if self.dc_weight > 0:
+                losses['dc'] = d_loss * self.dc_weight
         
         total_loss = sum(losses.values())
         losses['total'] = total_loss
-        
+
         return losses
     
     def _phase_loss(self, pred, target):
@@ -697,6 +717,41 @@ class MambaJSCCEnhancedLoss(nn.Module):
         phase_loss = F.l1_loss(torch.sin(phase_diff), torch.zeros_like(phase_diff))
         
         return phase_loss
+
+    def _short_time_losses(self, pred, target, win: int = 80, hop: int = 80):
+        """计算短窗损失：
+        - sig_loss: 单位能量余弦距离（原 FARGAN 思路）
+        - rms_loss: 每窗 log-RMS 的 L1
+        - dc_loss: 每窗均值的 L2
+        """
+        B, T = pred.shape[0], pred.shape[1]
+        # 使用 unfold 进行分帧: [B, nwin, win]
+        if T < win:
+            # 退化：用整段作为一窗
+            x = pred.unsqueeze(1)
+            y = target.unsqueeze(1)
+        else:
+            x = pred.unfold(dimension=1, size=win, step=hop)
+            y = target.unfold(dimension=1, size=win, step=hop)
+        nwin = x.shape[1]
+        eps = 1e-8
+
+        # sig_loss: 单位能量归一化后余弦距离
+        xn = x / (x.norm(dim=-1, keepdim=True) + eps)
+        yn = y / (y.norm(dim=-1, keepdim=True) + eps)
+        cos_sim = (xn * yn).sum(dim=-1)
+        sig_loss = (1.0 - cos_sim).mean()
+
+        # rms 匹配：log-RMS 的 L1
+        xr = torch.sqrt((x.pow(2).mean(dim=-1)) + eps)
+        yr = torch.sqrt((y.pow(2).mean(dim=-1)) + eps)
+        rms_loss = torch.abs(torch.log(xr + eps) - torch.log(yr + eps)).mean()
+
+        # dc：均值的 L2
+        xdc = x.mean(dim=-1)
+        dc_loss = xdc.pow(2).mean()
+
+        return sig_loss, rms_loss, dc_loss
 
 
 class STFTLoss(nn.Module):

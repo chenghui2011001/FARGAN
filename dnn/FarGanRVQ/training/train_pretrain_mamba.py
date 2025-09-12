@@ -147,6 +147,12 @@ def main():
     ap.add_argument('--channel-prob', type=float, default=0.5)
     ap.add_argument('--stft-sizes', type=int, nargs='+', default=[512, 1024])
     ap.add_argument('--disable-phase-loss', action='store_true')
+    # 短窗/幅度/直流约束
+    ap.add_argument('--sig-loss-w', type=float, default=0.03, help='短窗 sig_loss(80) 权重')
+    ap.add_argument('--rms-loss-w', type=float, default=0.05, help='短窗 log-RMS 匹配权重')
+    ap.add_argument('--dc-loss-w',  type=float, default=0.01, help='短窗 DC 均值 L2 权重')
+    ap.add_argument('--sig-win',    type=int,   default=80,   help='短窗大小（样本）')
+    ap.add_argument('--sig-hop',    type=int,   default=80,   help='短窗步长（样本）')
     # DDP 相关
     ap.add_argument('--ddp-find-unused', action='store_true', help='调试时可开；性能较差')
     ap.add_argument('--no-freeze-unused', dest='freeze_unused', action='store_false', help='关闭预冻结（默认开启）')
@@ -269,6 +275,11 @@ def main():
         adversarial_weight=0.0,
         channel_weight=0.05 if args.enable_csi else 0.0,
         phase_weight=phase_weight,
+        sig_weight=args.sig_loss_w,
+        rms_weight=args.rms_loss_w,
+        dc_weight=args.dc_loss_w,
+        sig_win=args.sig_win,
+        sig_hop=args.sig_hop,
         stft_sizes=args.stft_sizes,
     )
 
@@ -357,7 +368,8 @@ def main():
                 y_hat_p, target_p = preprocess_for_loss(y_hat, target_, ref_rms=0.1)
 
                 # 损失
-                losses = loss_fn(pred=y_hat_p, target=target_p, csi=None, disc_real=None, disc_fake=None)
+                losses = loss_fn(pred=y_hat_p, target=target_p, csi=None, disc_real=None, disc_fake=None,
+                                 pred_raw=y_hat, target_raw=target_)
                 loss = losses['total']
 
             optimizer.zero_grad(set_to_none=True)
@@ -382,6 +394,9 @@ def main():
                     if 'spectral' in losses: writer.add_scalar('Loss/spec', float(losses['spectral']), step)
                     if 'phase'    in losses: writer.add_scalar('Loss/phase', float(losses['phase']), step)
                     if 'channel'  in losses: writer.add_scalar('Loss/channel', float(losses['channel']), step)
+                    if 'sig'      in losses: writer.add_scalar('Loss/sig',     float(losses['sig']), step)
+                    if 'rms'      in losses: writer.add_scalar('Loss/rms',     float(losses['rms']), step)
+                    if 'dc'       in losses: writer.add_scalar('Loss/dc',      float(losses['dc']), step)
                     # 波形统计（原始 y_hat）
                     with torch.no_grad():
                         p = y_hat.detach(); t = target_
