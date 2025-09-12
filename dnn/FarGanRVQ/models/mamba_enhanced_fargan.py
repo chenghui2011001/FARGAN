@@ -567,14 +567,14 @@ class MambaEnhancedFarGan(nn.Module):
 
                 # 基于周期的激励抽取（与原FARGAN一致的索引策略）
                 # period 映射到当前子帧所属帧
-        if periods is None:
-            # 缺省周期：用中值100
-            period_t = torch.full((B,), 100.0, device=device)
-        else:
-            # 可配置周期偏移：period 索引使用 period_shift + frame_idx
-            frame_idx = t // 4
-            per_idx = min(self.period_shift + frame_idx, periods.shape[1] - 1)
-            period_t = periods[:, per_idx]  # [B]
+                if periods is None:
+                    # 缺省周期：用中值100
+                    period_t = torch.full((B,), 100.0, device=device)
+                else:
+                    # 可配置周期偏移：period 索引使用 period_shift + frame_idx
+                    frame_idx = t // 4
+                    per_idx = min(self.period_shift + frame_idx, periods.shape[1] - 1)
+                    period_t = periods[:, per_idx]  # [B]
 
                 # idx = 256 - period + (arange(44) - 2); 超界回绕 period
                 rng = torch.arange(subframe_size + 4, device=device)
