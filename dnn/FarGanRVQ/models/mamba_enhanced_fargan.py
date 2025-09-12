@@ -226,11 +226,16 @@ class CSIAwareSubframeNet(nn.Module):
     """
     基于现有SubframeNet但增加CSI感知能力
     """
-    def __init__(self, cond_dim=96, hidden_dim=256, subframe_size=40):
+    def __init__(self, cond_dim=96, hidden_dim=256, subframe_size=40,
+                 use_dither: bool = True, noise_amp: float = 1.0/127.0,
+                 use_pitch_gate: bool = True):
         super().__init__()
         self.cond_dim = cond_dim
         self.hidden_dim = hidden_dim
         self.subframe_size = subframe_size
+        self.use_dither = use_dither
+        self.noise_amp = noise_amp
+        self.use_pitch_gate = use_pitch_gate
         
         # 前一子帧和基音处理
         self.prev_proj = nn.Conv1d(subframe_size, 32, 1)
@@ -255,8 +260,23 @@ class CSIAwareSubframeNet(nn.Module):
             nn.Linear(1, hidden_dim) for _ in range(3)
         ])
         
+        # 简化 pitch 门控：从条件预测逐层门控；并用1x1卷积将 pitch_proj 注入每层
+        if self.use_pitch_gate:
+            self.pitch_gate_head = nn.Conv1d(cond_dim, 3, 1)
+            self.pitch_inj = nn.ModuleList([
+                nn.Conv1d(32, hidden_dim, 1) for _ in range(3)
+            ])
+        else:
+            self.pitch_gate_head = None
+            self.pitch_inj = None
+
         # 输出层
         self.output_proj = nn.Conv1d(hidden_dim, subframe_size, 1)
+
+    def _n(self, x: torch.Tensor) -> torch.Tensor:
+        if not self.use_dither:
+            return x.clamp(-1.0, 1.0)
+        return (x + self.noise_amp * (torch.rand_like(x) - 0.5)).clamp(-1.0, 1.0)
         
     def forward(self, cond_subframe, prev_subframe, pitch_pred, csi=None):
         """
@@ -266,36 +286,51 @@ class CSIAwareSubframeNet(nn.Module):
             pitch_pred: [B, subframe_size] 基音预测
             csi: [B,] 信道状态信息
         """
-        # 投影
-        prev_proj = self.prev_proj(prev_subframe.unsqueeze(-1))  # [B, 32, 1]
-        pitch_proj = self.pitch_proj(pitch_pred.unsqueeze(-1))   # [B, 32, 1]
-        cond_proj = cond_subframe.unsqueeze(-1)                  # [B, cond_dim, 1]
-        
+        # 投影（加入微抖动，软限幅）
+        prev_in = self._n(prev_subframe.unsqueeze(-1))           # [B, 40, 1]
+        pitch_in = self._n(pitch_pred.unsqueeze(-1))             # [B, 40, 1]
+        cond_in = self._n(cond_subframe.unsqueeze(-1))           # [B, cond_dim, 1]
+
+        prev_proj = self.prev_proj(prev_in)                      # [B, 32, 1]
+        pitch_proj = self.pitch_proj(pitch_in)                   # [B, 32, 1]
+        cond_proj = cond_in                                      # [B, cond_dim, 1]
+
+        if self.use_pitch_gate:
+            pg = torch.sigmoid(self.pitch_gate_head(cond_proj)).squeeze(-1)  # [B,3]
+
         # 特征拼接
         x = torch.cat([prev_proj, pitch_proj, cond_proj], dim=1)  # [B, total_dim, 1]
-        
+
         # 主干网络处理
         for i, (conv, gate) in enumerate(zip(self.conv_layers, self.gate_layers)):
             residual = x if x.shape[1] == self.hidden_dim else None
-            
+
             # 主分支
-            h = torch.tanh(conv(x))
-            
+            h = torch.tanh(conv(x))                              # [B, hidden_dim, 1]
+
+            # 注入简化的 pitch 贡献
+            if self.use_pitch_gate:
+                inj = self.pitch_inj[i](pitch_proj)              # [B, hidden_dim, 1]
+                gain_i = pg[:, i].view(-1, 1, 1)                 # [B,1,1]
+                h = h + gain_i * inj
+            h = self._n(h)
+
             # 门控分支
-            g = torch.sigmoid(gate(cond_proj))
-            
+            g = torch.sigmoid(gate(cond_proj))                   # [B, hidden_dim, 1]
+            g = self._n(g)
+
             # CSI调制
             if csi is not None:
                 csi_mod = torch.sigmoid(self.csi_gates[i](csi.unsqueeze(-1))).unsqueeze(-1)  # [B, hidden_dim, 1]
                 g = g * csi_mod
-            
+
             # GLU
-            x = h * g
-            
+            x = self._n(h * g)
+
             # 残差连接
             if residual is not None:
                 x = x + residual
-        
+
         # 输出投影
         output = self.output_proj(x).squeeze(-1)  # [B, subframe_size]
         
@@ -315,10 +350,10 @@ class CSIAwareSubframeNet(nn.Module):
         """
         B, T_sub, _ = cond_seq.shape
 
-        # 转换为卷积格式: [B, D, T]
-        cond_t = cond_seq.transpose(1, 2)    # [B, cond_dim, T]
-        prev_t = prev_seq.transpose(1, 2)    # [B, 40, T]
-        pitch_t = pitch_seq.transpose(1, 2)  # [B, 40, T]
+        # 转换为卷积格式并加入微抖动: [B, D, T]
+        cond_t = self._n(cond_seq.transpose(1, 2))    # [B, cond_dim, T]
+        prev_t = self._n(prev_seq.transpose(1, 2))    # [B, 40, T]
+        pitch_t = self._n(pitch_seq.transpose(1, 2))  # [B, 40, T]
 
         # 投影和拼接
         prev_proj = self.prev_proj(prev_t)      # [B, 32, T]
@@ -326,18 +361,29 @@ class CSIAwareSubframeNet(nn.Module):
         x = torch.cat([prev_proj, pitch_proj, cond_t], dim=1)  # [B, 32+32+cond_dim, T]
 
         # 主干网络 + 门控 + （可选）CSI调制
+        # 逐层 pitch 门控（时间维度）
+        if self.use_pitch_gate:
+            pg_t = torch.sigmoid(self.pitch_gate_head(cond_t))   # [B,3,T]
+
         for i, (conv, gate) in enumerate(zip(self.conv_layers, self.gate_layers)):
             residual = x if x.shape[1] == self.hidden_dim else None
 
             h = torch.tanh(conv(x))                 # [B, hidden_dim, T]
+            if self.use_pitch_gate:
+                inj = self.pitch_inj[i](pitch_proj) # [B, hidden_dim, T]
+                gain_i = pg_t[:, i:i+1, :]          # [B,1,T]
+                h = h + gain_i * inj
+            h = self._n(h)
+
             g = torch.sigmoid(gate(cond_t))         # [B, hidden_dim, T]
+            g = self._n(g)
 
             if csi is not None:
                 csi_mod = torch.sigmoid(self.csi_gates[i](csi.unsqueeze(-1))).unsqueeze(-1)  # [B, hidden_dim, 1]
                 csi_mod = csi_mod.expand(-1, -1, h.shape[-1])  # [B, hidden_dim, T]
                 g = g * csi_mod
 
-            x = h * g
+            x = self._n(h * g)
             if residual is not None:
                 x = x + residual
 
