@@ -99,12 +99,15 @@ def is_main_process(rank): return rank == 0
 
 # ---------- collate ----------
 def collate_fn(batch):
-    feats, data = [], []
+    feats, pers, data = [], [], []
     for features, periods, waveform, lpc in batch:
-        feats.append(features); data.append(waveform)
-    feats = torch.from_numpy(np.array(feats)).float()
-    data  = torch.from_numpy(np.array(data)).float()
-    return feats, data
+        feats.append(features)
+        pers.append(periods)
+        data.append(waveform)
+    feats = torch.from_numpy(np.array(feats)).float()   # [B, T10, F]
+    pers = torch.from_numpy(np.array(pers)).float()     # [B, T10]
+    data = torch.from_numpy(np.array(data)).float()     # [B, T]
+    return feats, pers, data
 
 # ---------- 预冻结工具 ----------
 def freeze_by_keywords(module: torch.nn.Module, keywords):
@@ -337,9 +340,10 @@ def main():
         (model.module if is_dist else model).train()
         tepoch = tqdm(dl, desc=f'Pretrain Epoch {epoch+1}/{args.epochs}', disable=not is_main_process(rank))
 
-        for bidx, (features, target) in enumerate(tepoch):
+        for bidx, (features, periods, target) in enumerate(tepoch):
             features = features.to(device, non_blocking=True)
-            target  = target.to(device,  non_blocking=True)
+            periods  = periods.to(device,  non_blocking=True)
+            target   = target.to(device,   non_blocking=True)
 
             N_samples = min(target.shape[1], features.shape[1] * 160)
             with autocast_ctx():
@@ -354,6 +358,7 @@ def main():
                         teacher_sig = None
                 y_hat = model(
                     features,
+                    periods=periods,
                     csi=None, channel_noise=None,
                     target_length=N_samples,
                     parallel_train=args.parallel_train,
@@ -428,18 +433,18 @@ def main():
             ema.apply_shadow(model_eval)
             with torch.no_grad():
                 try:
-                    vfeat, vtarget = next(iter(dl))
+                    vfeat, vper, vtarget = next(iter(dl))
                 except StopIteration:
-                    vfeat, vtarget = None, None
+                    vfeat, vper, vtarget = None, None, None
                 if vfeat is not None:
-                    vfeat = vfeat[:2].to(device); vtarget = vtarget[:2].to(device)
+                    vfeat = vfeat[:2].to(device); vper = vper[:2].to(device); vtarget = vtarget[:2].to(device)
                     fixed_tlen = args.seq_len * 160
                     with autocast_ctx():
                         # 验证默认走自回归；若指定预热则应用
                         vteacher = None
                         if args.ar_preheat and args.ar_preheat > 0:
                             vteacher = vtarget[:, :min(fixed_tlen, int(args.ar_preheat)*160)]
-                        yv = model_eval(vfeat, csi=None, channel_noise=None,
+                        yv = model_eval(vfeat, periods=vper, csi=None, channel_noise=None,
                                         target_length=fixed_tlen, parallel_train=False,
                                         teacher_signal=vteacher)
                     yv = yv[:, :min(vtarget.shape[1], yv.shape[1])]

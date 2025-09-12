@@ -28,13 +28,15 @@ from dnn.FarGanRVQ.models.mamba_enhanced_fargan import MambaEnhancedFarGan
 
 # ---------- 与训练一致的 collate ----------
 def collate_fn(batch):
-    feats, data = [], []
+    feats, pers, data = [], [], []
     for features, periods, waveform, lpc in batch:
         feats.append(features)
+        pers.append(periods)
         data.append(waveform)
     feats = torch.from_numpy(np.array(feats)).float()
+    pers  = torch.from_numpy(np.array(pers)).float()
     data  = torch.from_numpy(np.array(data)).float()
-    return feats, data
+    return feats, pers, data
 
 # ---------- 数值修正工具 ----------
 def denorm_none(x): return x
@@ -153,14 +155,16 @@ def main():
     save_dir = os.path.join(args.outdir, run_name, "wavs")
     os.makedirs(save_dir, exist_ok=True)
     written, global_step = 0, 0
-    for feats, target in dl:
+    for feats, periods, target in dl:
         feats   = feats.to(device, non_blocking=True)
+        periods = periods.to(device, non_blocking=True)
         target  = target.to(device, non_blocking=True)       # [B, T]
         # 生成预测；对齐目标长度
         # Teacher Forcing：并行子帧路径
         if args.teacher_forcing:
             y_hat = model(
                 feats,
+                periods=periods,
                 csi=None, channel_noise=None,
                 target_length=min(target.shape[1], feats.shape[1]*160),
                 parallel_train=True,
@@ -174,6 +178,7 @@ def main():
                 preheat = target[:, :min(N, target.shape[1])]
             y_hat = model(
                 feats,
+                periods=periods,
                 csi=None, channel_noise=None,
                 target_length=min(target.shape[1], feats.shape[1]*160),
                 parallel_train=False,
