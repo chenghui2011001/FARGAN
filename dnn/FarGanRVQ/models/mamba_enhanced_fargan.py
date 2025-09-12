@@ -455,9 +455,14 @@ class MambaEnhancedFarGan(nn.Module):
         if voicing is None:
             voicing = torch.ones(B, T10, device=device)
         
-        # 特征处理
-        feat_proj = self.feature_proj(features)
-        pitch_emb = self.pitch_embed((periods - 32).long().clamp(0, 223))
+        # 特征处理（与原版 FARGAN 时间对齐）：
+        # 原版在 cond_net 中丢弃前2帧（features[:,2:], periods[:,2:])，
+        # 且在逐帧合成时使用 period[:, 3+n]。这里复现同样的时序偏移。
+        feats_shift = features[:, 2:, :] if features.shape[1] > 2 else features
+        periods_shift = periods[:, 2:] if periods is not None and periods.shape[1] > 2 else periods
+
+        feat_proj = self.feature_proj(feats_shift)
+        pitch_emb = self.pitch_embed(((periods_shift if periods_shift is not None else periods) - 32).long().clamp(0, 223)) if periods is not None else torch.zeros(feat_proj.shape[0], feat_proj.shape[1], 8, device=device, dtype=feat_proj.dtype)
         voicing_emb = self.voicing_proj(voicing.unsqueeze(-1))
         
         # 组合特征
@@ -552,7 +557,10 @@ class MambaEnhancedFarGan(nn.Module):
                     # 缺省周期：用中值100
                     period_t = torch.full((B,), 100.0, device=device)
                 else:
-                    period_t = periods[:, min(t // 4, periods.shape[1]-1)]  # [B]
+                    # 对齐原版：period 索引使用 3 + frame_idx
+                    frame_idx = t // 4
+                    per_idx = min(3 + frame_idx, periods.shape[1] - 1)
+                    period_t = periods[:, per_idx]  # [B]
 
                 # idx = 256 - period + (arange(44) - 2); 超界回绕 period
                 rng = torch.arange(subframe_size + 4, device=device)
