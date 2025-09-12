@@ -462,8 +462,18 @@ class MambaEnhancedFarGan(nn.Module):
         periods_shift = periods[:, 2:] if periods is not None and periods.shape[1] > 2 else periods
 
         feat_proj = self.feature_proj(feats_shift)
-        pitch_emb = self.pitch_embed(((periods_shift if periods_shift is not None else periods) - 32).long().clamp(0, 223)) if periods is not None else torch.zeros(feat_proj.shape[0], feat_proj.shape[1], 8, device=device, dtype=feat_proj.dtype)
-        voicing_emb = self.voicing_proj(voicing.unsqueeze(-1))
+        # 周期与清浊音与 cond 同步对齐
+        if periods is not None:
+            per_used = periods_shift if periods_shift is not None else periods
+            pitch_emb = self.pitch_embed((per_used - 32).long().clamp(0, 223))
+        else:
+            pitch_emb = torch.zeros(feat_proj.shape[0], feat_proj.shape[1], 8, device=device, dtype=feat_proj.dtype)
+
+        if voicing is None:
+            voicing_used = torch.ones(feat_proj.shape[0], feat_proj.shape[1], device=device, dtype=feat_proj.dtype)
+        else:
+            voicing_used = voicing[:, 2:] if voicing.shape[1] > 2 else voicing
+        voicing_emb = self.voicing_proj(voicing_used.unsqueeze(-1))
         
         # 组合特征
         combined_feat = torch.cat([feat_proj, pitch_emb, voicing_emb], dim=-1)
