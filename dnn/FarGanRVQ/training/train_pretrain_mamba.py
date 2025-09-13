@@ -385,27 +385,40 @@ def main():
                 y_hat = y_hat[:, :min_len]
                 target_ = target[:, :min_len]
 
-                # 训练期短时对齐（可选）：按第1条样本估计整批 lag，并对齐后再算损失
+                # 训练期短时对齐（可选）：逐样本估计 lag，并对齐后再算损失
                 if args.train_align_lag and args.train_align_lag > 0:
                     with torch.no_grad():
-                        def _best_lag_1d(x, y, max_lag=80):
-                            best_lag, best_c = 0, -1e9
+                        max_lag = int(args.train_align_lag)
+                        B, T = y_hat.shape[0], y_hat.shape[1]
+                        y_starts, t_starts = [], []
+                        for i in range(B):
+                            x = y_hat[i].contiguous().view(-1)
+                            y = target_[i].contiguous().view(-1)
+                            best_L, best_c = 0, -1e9
                             for L in range(-max_lag, max_lag+1):
                                 if L >= 0:
                                     c = F.cosine_similarity(x[L:], y[:y.numel()-L], dim=0)
                                 else:
-                                    L2 = -L; c = F.cosine_similarity(x[:x.numel()-L2], y[L2:], dim=0)
+                                    L2 = -L
+                                    c = F.cosine_similarity(x[:x.numel()-L2], y[L2:], dim=0)
                                 v = float(c)
-                                if v > best_c: best_c, best_lag = v, L
-                            return best_lag
-                        lag = _best_lag_1d(y_hat[0].contiguous().view(-1), target_[0].contiguous().view(-1), max_lag=int(args.train_align_lag))
-                    if lag > 0:
-                        y_hat = y_hat[:, lag:]
-                        target_ = target_[:, :y_hat.shape[1]]
-                    elif lag < 0:
-                        L2 = -lag
-                        target_ = target_[:, L2:]
-                        y_hat = y_hat[:, :target_ .shape[1]]
+                                if v > best_c:
+                                    best_c, best_L = v, L
+                            y_starts.append(max(best_L, 0))
+                            t_starts.append(max(-best_L, 0))
+                        # 对齐到批内公共长度
+                        y_len, t_len = y_hat.shape[1], target_.shape[1]
+                        common_len = min(
+                            min(y_len - ys for ys in y_starts),
+                            min(t_len - ts for ts in t_starts)
+                        )
+                        if common_len > 8:
+                            y_hat = torch.stack([
+                                y_hat[i, y_starts[i]: y_starts[i] + common_len] for i in range(B)
+                            ], dim=0)
+                            target_ = torch.stack([
+                                target_[i, t_starts[i]: t_starts[i] + common_len] for i in range(B)
+                            ], dim=0)
 
                 # 去直流 + （可选）RMS 归一 + anti-clip（仅用于 loss）
                 y_hat_p, target_p = preprocess_for_loss(y_hat, target_, ref_rms=args.loss_ref_rms)

@@ -168,6 +168,8 @@ class MambaConditionNet(nn.Module):
         self.temporal_upsample = nn.ConvTranspose1d(
             hidden_dim, out_dim, kernel_size=4, stride=4, padding=0
         )
+        # 固定将 cond(=out_dim) 映射到 80 维，贴合原版子帧块结构
+        self.cond_down = nn.Linear(out_dim, 80)
         
         # 增益预测
         self.gain_head = nn.Linear(out_dim, 1)
@@ -214,19 +216,24 @@ class MambaConditionNet(nn.Module):
         x = x.transpose(1, 2)  # [B, hidden_dim, T]
         cond = self.temporal_upsample(x)  # [B, out_dim, T*4]
         cond = cond.transpose(1, 2)  # [B, T*4, out_dim]
+        # 投影到 80 维，供子帧网络使用
+        if not hasattr(self, 'cond_down'):
+            # 向后兼容旧权重：运行时构建
+            self.cond_down = nn.Linear(self.out_dim, 80).to(cond.device)
+        cond80 = self.cond_down(cond)  # [B, T*4, 80]
         
         # 增益预测（上界保护，避免数值爆炸导致音频剪裁/NaN）
         gain_raw = self.gain_head(cond)
         gain = torch.exp(gain_raw.clamp(-1.5, 1.5))  # [B, T*4, 1]
 
-        return cond, gain
+        return cond80, gain
 
 
 class CSIAwareSubframeNet(nn.Module):
     """
     基于现有SubframeNet但增加CSI感知能力
     """
-    def __init__(self, cond_dim=96, hidden_dim=256, subframe_size=40,
+    def __init__(self, cond_dim=80, hidden_dim=256, subframe_size=40,
                  use_dither: bool = True, noise_amp: float = 1.0/127.0,
                  use_pitch_gate: bool = True):
         super().__init__()
@@ -415,7 +422,8 @@ class MambaEnhancedFarGan(nn.Module):
         
         # 核心组件（用Mamba技术替换）
         self.cond_net = MambaConditionNet(cond_dim + 16, 128, 96)  # +16 for pitch/voicing
-        self.subframe_net = CSIAwareSubframeNet(96, 256, subframe_size)
+        # 子帧网络读取 80 维条件（更贴近原版 FARGAN 的子帧块语义）
+        self.subframe_net = CSIAwareSubframeNet(80, 256, subframe_size)
         
         # 基音预测器（保持原有逻辑）
         self.pitch_predictor = AdaptivePitchPredictor(64)
