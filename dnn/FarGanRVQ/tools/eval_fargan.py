@@ -61,10 +61,11 @@ def deemph(x, p=0.97):
     else:
         raise ValueError("deemph expects 1D or 2D tensor")
 
-def build_model(F_used=20, period_shift=3):
+def build_model(F_used=20, period_shift=3, output_delay=0):
     # 与训练脚本构造保持一致
     return MambaEnhancedFarGan(in_features=F_used, cond_dim=32, subframe_size=40,
-                               cond_shift=2, period_shift=period_shift)
+                               cond_shift=2, period_shift=period_shift,
+                               output_delay=output_delay)
 
 def build_dataset(args, frame_size=160, seq_len=60, F_used=20):
     return FARGANDataset(
@@ -93,6 +94,7 @@ def main():
     ap.add_argument("--F-used",  type=int, default=20, help="与训练一致的 nb_used_features")
     ap.add_argument("--outdir", type=str, default="runs_eval")
     ap.add_argument("--period-shift", type=int, default=3, help="模型周期偏移 period_shift（默认3）")
+    ap.add_argument("--output-delay", type=int, default=0, help=">0 延后，<0 提前，对生成结果做样本级补偿")
     ap.add_argument("--tag", type=str, default="Val_fixed", help="根 tag（如 Val_fixed 或 Test）")
 
     # 播放/数值修正
@@ -126,7 +128,8 @@ def main():
     if isinstance(sd, dict) and "model_state_dict" in sd:
         sd = sd["model_state_dict"]
 
-    model = build_model(F_used=args.F_used, period_shift=args.period_shift).to(device)
+    model = build_model(F_used=args.F_used, period_shift=args.period_shift,
+                        output_delay=args.output_delay).to(device)
     missing, unexpected = model.load_state_dict(sd, strict=False)
     print("[CKPT] missing:", len(missing), "unexpected:", len(unexpected))
     if len(missing) > 0:

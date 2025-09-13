@@ -400,11 +400,13 @@ class MambaEnhancedFarGan(nn.Module):
     基于现有EnhancedFarGan框架融合MambaJSCC技术
     """
     def __init__(self, in_features=20, cond_dim=32, subframe_size=40,
-                 cond_shift: int = 2, period_shift: int = 3):
+                 cond_shift: int = 2, period_shift: int = 3,
+                 output_delay: int = 0):
         super().__init__()
         self.subframe_size = subframe_size
         self.cond_shift = int(cond_shift)
         self.period_shift = int(period_shift)
+        self.output_delay = int(output_delay)
         
         # 输入处理（保持与原框架一致）
         self.feature_proj = nn.Linear(in_features, cond_dim)
@@ -604,6 +606,18 @@ class MambaEnhancedFarGan(nn.Module):
 
             output = torch.cat(outputs, dim=1)
         
+        # 输出延迟/提前补偿（样本级）：>0 表示整体延后；<0 表示整体提前
+        if self.output_delay != 0:
+            d = self.output_delay
+            if d > 0:
+                pad = torch.zeros(B, d, device=device, dtype=output.dtype)
+                output = torch.cat([pad, output], dim=1)
+            else:
+                cut = -d
+                if output.shape[1] > cut:
+                    output = output[:, cut:]
+                else:
+                    output = output.new_zeros(B, 1)
         return output
     
     def _simple_pitch_prediction(self, prev_subframe, period):

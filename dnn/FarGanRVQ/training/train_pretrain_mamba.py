@@ -165,6 +165,8 @@ def main():
     # 时序/模型参数
     ap.add_argument('--period-shift', type=int, default=3,
                     help='自回归时每帧周期索引的基础偏移（默认3，对齐原版FARGAN）')
+    ap.add_argument('--output-delay', type=int, default=0,
+                    help='模型输出的样本级延迟补偿；>0 延后，<0 提前（默认0）')
     # 训练期短时对齐
     ap.add_argument('--train-align-lag', type=int, default=80,
                     help='训练时在 ±lag 范围内对齐 y_hat/target 后再计算损失；0 关闭')
@@ -234,7 +236,8 @@ def main():
 
     # ---------- 模型 ----------
     model = MambaEnhancedFarGan(in_features=F_used, cond_dim=32, subframe_size=40,
-                                cond_shift=2, period_shift=args.period_shift).to(device)
+                                cond_shift=2, period_shift=args.period_shift,
+                                output_delay=args.output_delay).to(device)
 
     # 可选恢复生成器参数（在 DDP 之前）
     opt_state_cache = None
